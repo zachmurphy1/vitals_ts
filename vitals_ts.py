@@ -34,7 +34,7 @@ def get_valid_events(events, nested_events=[
     flags = {}
     for i in nested_events:
         events_paired[i['name']] = pd.DataFrame()
-        flags[i['name']] = []
+        flags[i['name']+'_flags'] = []
     
     # Recursively loop through event levels and nested sub-levels
     def get_nested_events(e, level=0):
@@ -46,7 +46,7 @@ def get_valid_events(events, nested_events=[
         
         # Append events and flags to container
         events_paired[nested_events[level]['name']] = pd.concat([events_paired[nested_events[level]['name']], paired])
-        flags[nested_events[level]['name']] = flags[nested_events[level]['name']] + flag
+        flags[nested_events[level]['name']+'_flags'] = flags[nested_events[level]['name']+'_flags'] + flag
         
         # Loop through each event
         if level < len(nested_events) - 1:
@@ -69,6 +69,31 @@ def get_valid_events(events, nested_events=[
         events_paired_df = pd.DataFrame().from_dict({'id':[], 'event':[], 'event_num':[],'start':[], 'end':[]})
     return events_paired_df, flags
     
+def reduce_duplicates_at_time(df, preferences, index=['timestamp'], columns=['measure'], values='value', agg=np.mean):
+    times = df[index].drop_duplicates()
+    measures = df[columns].drop_duplicates()
+    
+    df_filtered = pd.DataFrame()
+    
+    for m in measures.itertuples(index=False):
+        m_dict = {}
+        for c in columns:
+            m_dict[c] = getattr(m, c)
+        m = pd.DataFrame(m_dict, index=[0])
+
+        df_m = pd.merge(df,m,on=columns,how='inner')
+        
+        def pref_agg(x, agg=agg):
+            min_pref = x['preference'].dropna().min()
+            if not np.isnan(min_pref):
+                x = x[x['preference']==min_pref]
+                
+            return agg(x[values])
+            
+        df_agg = pd.DataFrame(df_m.groupby(index+columns).apply(pref_agg)).reset_index().set_index(index)
+        df_agg.columns = columns + [values]
+        df_filtered = pd.concat([df_filtered, df_agg])
+    return df_filtered.sort_index()
     
 def validate_events(df, start_name, end_name, repeat_max_min=5, min_event_duration=1):
     """Pairs and filters events at level
@@ -79,7 +104,7 @@ def validate_events(df, start_name, end_name, repeat_max_min=5, min_event_durati
             - event (str): name of event (with start/stop)
             - timestamp (datetime64[ns]): timestamp for event
         - start_name (str): name of start event
-        - end_nname (str): name of end event
+        - end_name (str): name of end event
         - repeat_max_min (float): maximum minutes between repeated start/end events to count them as one (later one gets dropped)
         - min_event_duration (float): minimum duration in minutes for a start/end pair to count as valid
     
@@ -138,7 +163,7 @@ def validate_events(df, start_name, end_name, repeat_max_min=5, min_event_durati
     return pivoted, flags
 
 
-def ts_from_events(df, order=['ADT','Anesthesia','CPB','AXC'], freq='1T'):
+def ts_from_events(df, order=['ADT','Anesthesia','CPB','AXC'], start=None, end=None, freq='1T'):
     """Creates timeseries labelled by df event status
     
     Args:
@@ -155,8 +180,11 @@ def ts_from_events(df, order=['ADT','Anesthesia','CPB','AXC'], freq='1T'):
     if df.shape[0] == 0:
         return pd.DataFrame().from_dict({'timestamp': []}).set_index('timestamp')
     
-    # DataFrame containner
-    ts = pd.DataFrame().from_dict({'timestamp': pd.date_range(start=df['start'].min(), end=df['end'].max(), freq=freq)}).set_index('timestamp')
+    # DataFrame container
+    if (start!=start)&(end!=end):
+        ts = pd.DataFrame().from_dict({'timestamp': pd.date_range(start=df['start'].min(), end=df['end'].max(), freq=freq)}).set_index('timestamp')
+    else:
+        ts = pd.DataFrame().from_dict({'timestamp': pd.date_range(start=start, end=end, freq=freq)}).set_index('timestamp')
     for c in order:
         ts[c] = np.NaN
     event_counts = {}
@@ -185,7 +213,7 @@ def ts_from_events(df, order=['ADT','Anesthesia','CPB','AXC'], freq='1T'):
                 # Get nested
                 events_sub = e[(e['start'] >= r['start']) & (e['end'] <= r['end'])]
                 set_nested_ts(events_sub, r['start'], r['end'], level+1)
-    set_nested_ts(df)
+    set_nested_ts(df, start=start, end=end)
     
     return ts
 
@@ -223,11 +251,10 @@ def split_bp(df, name, sbp_name='SBP', dbp_name='DBP', remove_orig=True):
     
 # Standard absolute min/max ranges
 abs_filter = {
-        'Pulse': (20, 220),
+        'HR': (20, 220),
         'mABP': (10, 250),
         'SBP': (20, 300),
         'DBP': (5, 225),
-        'Pulse': (30, 150),
         'CVP': (3, 20),
         'RR': (5, 50),
         'Temp': (20, 43),
@@ -324,7 +351,10 @@ def feature_by_absolute_time(df, cols, func, name, start, end, **kwargs):
     df_sub = df.loc[(df.index >= start) & (df.index < end)]
     
     for c in cols:
-        features['{}__{}'.format(c, name)] = func(df_sub[c], **kwargs)
+        if df_sub[c].dropna().shape[0] > 0:
+            features['{}__{}'.format(c, name)] = func(df_sub[c], **kwargs)
+        else:
+            features['{}__{}'.format(c, name)] = np.NaN
         
     return features
 
@@ -394,7 +424,10 @@ def ts_valid_time(x, **kwargs):
     return (~x.isna()).sum()
     
 def ts_mean(x, **kwargs):
-    return np.nanmean(x)
+    if x.dropna().shape[0] > 0:
+        return np.nanmean(x)
+    else:
+        return np.NaN
 
 def ts_tut(x, **kwargs):
     """Get time under/above threshold
