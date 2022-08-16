@@ -280,7 +280,8 @@ abs_filter = {
         'pO2': (10,700),
         'pCO2': (10,200),
         'HCO3': (5, 100),
-        'BE': (-30, 30)
+        'BE': (-30, 30),
+        'Lactate': (0,100)
     }
 
 def absolute_filter(dat, abs_filter=abs_filter):
@@ -428,6 +429,9 @@ def ts_mean(x, **kwargs):
         return np.nanmean(x)
     else:
         return np.NaN
+    
+def ts_sum(x, **kwargs):
+    return np.nansum(x)
 
 def ts_tut(x, **kwargs):
     """Get time under/above threshold
